@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head><title>Forehand Analysis Results</title></head>
+<body>
+  <h1>Analysis Results</h1>
+  <video src="{{ annotated_video_url }}" controls width="480"></video>
+
+  <h2>Key Phases</h2>
+  {% for phase_name, url in phase_urls.items() %}
+    <figure>
+      <img src="{{ url }}" width="240">
+      <figcaption>{{ phase_name }}</figcaption>
+    </figure>
+  {% endfor %}
+
+  <h2>Coaching Feedback</h2>
+  <p>{{ feedback_text }}</p>
+
+  <a href="/">Analyze another clip</a>
+</body>
+</html>
