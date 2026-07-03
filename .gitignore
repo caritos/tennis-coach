@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/*.task
+models/*.pkl
+static/results/*
+!static/results/.gitkeep
+reference_clips/*
+!reference_clips/.gitkeep
