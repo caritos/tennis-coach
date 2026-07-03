@@ -1066,7 +1066,11 @@ def build_feature_vectors(reference_dir: Path) -> list:
             features = compute_features(frames, phases)
             vectors.append(features.to_vector())
             print(f"OK   {clip_path.name}")
-        except Exception as exc:
+        except ValueError as exc:
+            # ValueError is the documented "expected" failure across the pipeline
+            # (no clean swing found, too few detected frames, coincident landmark
+            # points, etc.) — anything else is a real bug and should crash loudly
+            # rather than being silently counted as a skipped clip.
             print(f"SKIP {clip_path.name}: {exc}")
 
     return vectors
@@ -1210,6 +1214,25 @@ def test_generate_feedback_raises_when_ollama_unreachable(monkeypatch):
 
     with pytest.raises(OllamaUnavailableError):
         generate_feedback(make_result())
+
+
+def test_generate_feedback_raises_when_ollama_times_out(monkeypatch):
+    def fake_post(*args, **kwargs):
+        raise requests.exceptions.Timeout("timed out")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    with pytest.raises(OllamaUnavailableError):
+        generate_feedback(make_result())
+
+
+def test_generate_feedback_raises_when_model_not_found(monkeypatch):
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: FakeResponse({"response": "unused"}, status_code=404)
+    )
+
+    with pytest.raises(OllamaUnavailableError):
+        generate_feedback(make_result())
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1266,13 +1289,22 @@ def generate_feedback(result: ScoreResult, model: str = DEFAULT_MODEL) -> str:
             json={"model": model, "prompt": prompt, "stream": False},
             timeout=120,
         )
+        response.raise_for_status()
     except requests.exceptions.ConnectionError as exc:
         raise OllamaUnavailableError(
             f"Could not reach Ollama at localhost:11434 — is `ollama serve` running "
             f"and has `{model}` been pulled?"
         ) from exc
+    except requests.exceptions.Timeout as exc:
+        raise OllamaUnavailableError(
+            f"Ollama at localhost:11434 timed out generating a response — the local "
+            f"model may be slow or stuck. Try again, or check `ollama serve` logs."
+        ) from exc
+    except requests.exceptions.HTTPError as exc:
+        raise OllamaUnavailableError(
+            f"Ollama returned an error for model `{model}` — has it been pulled? ({exc})"
+        ) from exc
 
-    response.raise_for_status()
     return response.json()["response"]
 ```
 
@@ -1678,6 +1710,8 @@ git commit -m "Add pipeline orchestration wiring pose through to feedback"
 
 Replace the contents of `tests/test_main.py` with:
 ```python
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 import app.main as main_module
@@ -1746,6 +1780,26 @@ def test_analyze_shows_error_when_ollama_unavailable(monkeypatch):
 
     assert response.status_code == 200
     assert "Could not reach Ollama" in response.text
+
+
+def test_analyze_sanitizes_malicious_filename(monkeypatch, tmp_path):
+    captured_paths = {}
+
+    def fake_analyze(video_path, model_path, output_dir):
+        captured_paths["video_path"] = video_path
+        raise LowPoseConfidenceError("stop before real processing")
+
+    monkeypatch.setattr(main_module, "analyze_forehand", fake_analyze)
+
+    response = client.post(
+        "/analyze",
+        files={"video": ("../../../../etc/passwd", b"fake video bytes", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    saved_path = Path(captured_paths["video_path"])
+    assert saved_path.name == "upload.mp4"
+    assert ".." not in saved_path.parts
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1829,10 +1883,21 @@ def upload_form(request: Request):
     return templates.TemplateResponse("upload.html", {"request": request})
 
 
+ALLOWED_UPLOAD_SUFFIXES = {".mp4", ".mov", ".m4v"}
+
+
 @app.post("/analyze", response_class=HTMLResponse)
 async def analyze(request: Request, video: UploadFile = File(...)):
     with tempfile.TemporaryDirectory() as tmp_dir:
-        video_path = str(Path(tmp_dir) / video.filename)
+        # Never build the path from the client-supplied filename directly —
+        # an absolute or ".."-containing filename would let pathlib's `/`
+        # operator escape tmp_dir entirely (or replace it outright, for an
+        # absolute path), turning this into an arbitrary-file-write. Only the
+        # extension is taken from the upload, and only from an allowlist.
+        suffix = Path(video.filename or "").suffix.lower()
+        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            suffix = ".mp4"
+        video_path = str(Path(tmp_dir) / f"upload{suffix}")
         with open(video_path, "wb") as f:
             shutil.copyfileobj(video.file, f)
 
@@ -1874,7 +1939,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pytest tests/test_main.py -v`
-Expected: PASS (5 tests)
+Expected: PASS (6 tests)
 
 - [ ] **Step 5: Commit**
 
