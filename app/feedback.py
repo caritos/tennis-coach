@@ -43,11 +43,20 @@ def generate_feedback(result: ScoreResult, model: str = DEFAULT_MODEL) -> str:
             json={"model": model, "prompt": prompt, "stream": False},
             timeout=120,
         )
+        response.raise_for_status()
     except requests.exceptions.ConnectionError as exc:
         raise OllamaUnavailableError(
             f"Could not reach Ollama at localhost:11434 — is `ollama serve` running "
             f"and has `{model}` been pulled?"
         ) from exc
+    except requests.exceptions.Timeout as exc:
+        raise OllamaUnavailableError(
+            f"Ollama at localhost:11434 timed out generating a response — the local "
+            f"model may be slow or stuck. Try again, or check `ollama serve` logs."
+        ) from exc
+    except requests.exceptions.HTTPError as exc:
+        raise OllamaUnavailableError(
+            f"Ollama returned an error for model `{model}` — has it been pulled? ({exc})"
+        ) from exc
 
-    response.raise_for_status()
     return response.json()["response"]

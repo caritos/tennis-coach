@@ -56,3 +56,22 @@ def test_generate_feedback_raises_when_ollama_unreachable(monkeypatch):
 
     with pytest.raises(OllamaUnavailableError):
         generate_feedback(make_result())
+
+
+def test_generate_feedback_raises_when_ollama_times_out(monkeypatch):
+    def fake_post(*args, **kwargs):
+        raise requests.exceptions.Timeout("timed out")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    with pytest.raises(OllamaUnavailableError):
+        generate_feedback(make_result())
+
+
+def test_generate_feedback_raises_when_model_not_found(monkeypatch):
+    monkeypatch.setattr(
+        requests, "post", lambda *a, **k: FakeResponse({"response": "unused"}, status_code=404)
+    )
+
+    with pytest.raises(OllamaUnavailableError):
+        generate_feedback(make_result())
