@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 import app.main as main_module
@@ -66,3 +68,23 @@ def test_analyze_shows_error_when_ollama_unavailable(monkeypatch):
 
     assert response.status_code == 200
     assert "Could not reach Ollama" in response.text
+
+
+def test_analyze_sanitizes_malicious_filename(monkeypatch, tmp_path):
+    captured_paths = {}
+
+    def fake_analyze(video_path, model_path, output_dir):
+        captured_paths["video_path"] = video_path
+        raise LowPoseConfidenceError("stop before real processing")
+
+    monkeypatch.setattr(main_module, "analyze_forehand", fake_analyze)
+
+    response = client.post(
+        "/analyze",
+        files={"video": ("../../../../etc/passwd", b"fake video bytes", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    saved_path = Path(captured_paths["video_path"])
+    assert saved_path.name == "upload.mp4"
+    assert ".." not in saved_path.parts

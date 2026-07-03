@@ -12,6 +12,7 @@ from .pipeline import analyze_forehand, LowPoseConfidenceError
 from .feedback import OllamaUnavailableError
 
 REFERENCE_MODEL_PATH = "models/reference_model.pkl"
+ALLOWED_UPLOAD_SUFFIXES = {".mp4", ".mov", ".m4v"}
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -30,7 +31,15 @@ def upload_form(request: Request):
 @app.post("/analyze", response_class=HTMLResponse)
 async def analyze(request: Request, video: UploadFile = File(...)):
     with tempfile.TemporaryDirectory() as tmp_dir:
-        video_path = str(Path(tmp_dir) / video.filename)
+        # Never build the path from the client-supplied filename directly —
+        # an absolute or ".."-containing filename would let pathlib's `/`
+        # operator escape tmp_dir entirely (or replace it outright, for an
+        # absolute path), turning this into an arbitrary-file-write. Only the
+        # extension is taken from the upload, and only from an allowlist.
+        suffix = Path(video.filename or "").suffix.lower()
+        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            suffix = ".mp4"
+        video_path = str(Path(tmp_dir) / f"upload{suffix}")
         with open(video_path, "wb") as f:
             shutil.copyfileobj(video.file, f)
 
