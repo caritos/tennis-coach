@@ -250,9 +250,18 @@ from pathlib import Path
 
 import pytest
 
-from app.pose import extract_landmarks, FrameLandmarks
+from app.pose import extract_landmarks, FrameLandmarks, _monotonic_timestamp_ms
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sample_clip.mp4"
+
+
+def test_monotonic_timestamp_ms_advances_normally():
+    assert _monotonic_timestamp_ms(candidate_ms=100, last_ms=50) == 100
+
+
+def test_monotonic_timestamp_ms_falls_back_when_not_increasing():
+    assert _monotonic_timestamp_ms(candidate_ms=0, last_ms=50) == 51
+    assert _monotonic_timestamp_ms(candidate_ms=50, last_ms=50) == 51
 
 
 @pytest.mark.skipif(
@@ -312,6 +321,13 @@ class FrameLandmarks:
     landmarks: Optional[List[Landmark]]
 
 
+def _monotonic_timestamp_ms(candidate_ms: int, last_ms: int) -> int:
+    """MediaPipe's detect_for_video requires strictly increasing timestamps.
+    cv2's CAP_PROP_POS_MSEC can return 0 or a repeated value on some VFR/
+    re-encoded files, which would otherwise crash the detector mid-video."""
+    return candidate_ms if candidate_ms > last_ms else last_ms + 1
+
+
 def extract_landmarks(video_path: str, model_path: str = DEFAULT_MODEL_PATH) -> List[FrameLandmarks]:
     # num_poses=1 is how the spec's "pick the most prominent figure" error-handling
     # requirement is implemented: MediaPipe returns its single highest-confidence
@@ -328,40 +344,46 @@ def extract_landmarks(video_path: str, model_path: str = DEFAULT_MODEL_PATH) -> 
 
     results: List[FrameLandmarks] = []
 
-    with PoseLandmarker.create_from_options(options) as landmarker:
-        frame_index = 0
-        while True:
-            success, frame = cap.read()
-            if not success:
-                break
+    try:
+        with PoseLandmarker.create_from_options(options) as landmarker:
+            frame_index = 0
+            last_timestamp_ms = -1
+            while True:
+                success, frame = cap.read()
+                if not success:
+                    break
 
-            timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                candidate_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
+                timestamp_ms = _monotonic_timestamp_ms(candidate_ms, last_timestamp_ms)
+                last_timestamp_ms = timestamp_ms
 
-            detection = landmarker.detect_for_video(mp_image, timestamp_ms)
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-            if detection.pose_landmarks:
-                landmarks = [
-                    Landmark(x=lm.x, y=lm.y, z=lm.z, visibility=lm.visibility)
-                    for lm in detection.pose_landmarks[0]
-                ]
-            else:
-                landmarks = None
+                detection = landmarker.detect_for_video(mp_image, timestamp_ms)
 
-            results.append(
-                FrameLandmarks(frame_index=frame_index, timestamp_ms=timestamp_ms, landmarks=landmarks)
-            )
-            frame_index += 1
+                if detection.pose_landmarks:
+                    landmarks = [
+                        Landmark(x=lm.x, y=lm.y, z=lm.z, visibility=lm.visibility)
+                        for lm in detection.pose_landmarks[0]
+                    ]
+                else:
+                    landmarks = None
 
-    cap.release()
+                results.append(
+                    FrameLandmarks(frame_index=frame_index, timestamp_ms=timestamp_ms, landmarks=landmarks)
+                )
+                frame_index += 1
+    finally:
+        cap.release()
+
     return results
 ```
 
 - [ ] **Step 6: Run the test**
 
 Run: `pytest tests/test_pose.py -v`
-Expected: SKIPPED (no fixture clip yet — that's fine for now) or PASS if you've supplied `tests/fixtures/sample_clip.mp4`.
+Expected: PASS (2 tests: `test_monotonic_timestamp_ms_advances_normally`, `test_monotonic_timestamp_ms_falls_back_when_not_increasing`) plus SKIPPED for the smoke test (no fixture clip yet — that's fine for now), or PASS for all 3 if you've supplied `tests/fixtures/sample_clip.mp4`.
 
 - [ ] **Step 7: Commit**
 
