@@ -32,7 +32,11 @@ def build_feature_vectors(reference_dir: Path) -> list:
             features = compute_features(frames, phases)
             vectors.append(features.to_vector())
             print(f"OK   {clip_path.name}")
-        except Exception as exc:
+        except ValueError as exc:
+            # ValueError is the documented "expected" failure across the pipeline
+            # (no clean swing found, too few detected frames, coincident landmark
+            # points, etc.) — anything else is a real bug and should crash loudly
+            # rather than being silently counted as a skipped clip.
             print(f"SKIP {clip_path.name}: {exc}")
 
     return vectors
