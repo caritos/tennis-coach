@@ -88,3 +88,27 @@ def test_analyze_sanitizes_malicious_filename(monkeypatch, tmp_path):
     saved_path = Path(captured_paths["video_path"])
     assert saved_path.name == "upload.mp4"
     assert ".." not in saved_path.parts
+
+
+def test_analyze_shows_error_when_no_clean_swing_detected(monkeypatch):
+    def fake_analyze(*args, **kwargs):
+        raise ValueError("Not enough frames with a detected person to identify swing phases")
+
+    monkeypatch.setattr(main_module, "analyze_forehand", fake_analyze)
+
+    response = client.post("/analyze", files={"video": ("clip.mp4", b"fake video bytes", "video/mp4")})
+
+    assert response.status_code == 200
+    assert "Not enough frames with a detected person" in response.text
+
+
+def test_analyze_shows_error_when_reference_model_missing(monkeypatch):
+    def fake_analyze(*args, **kwargs):
+        raise FileNotFoundError("models/reference_model.pkl")
+
+    monkeypatch.setattr(main_module, "analyze_forehand", fake_analyze)
+
+    response = client.post("/analyze", files={"video": ("clip.mp4", b"fake video bytes", "video/mp4")})
+
+    assert response.status_code == 200
+    assert "No reference model found yet" in response.text

@@ -47,9 +47,24 @@ async def analyze(request: Request, video: UploadFile = File(...)):
 
         try:
             result = analyze_forehand(video_path, REFERENCE_MODEL_PATH, output_dir)
-        except (LowPoseConfidenceError, OllamaUnavailableError) as exc:
+        except (LowPoseConfidenceError, OllamaUnavailableError, ValueError) as exc:
+            # ValueError is the pipeline's documented "expected failure" type
+            # (no clean swing detected, unreadable video, etc.) — same friendly
+            # treatment as the two purpose-built exceptions above.
             return templates.TemplateResponse(
                 "upload.html", {"request": request, "error": str(exc)}
+            )
+        except FileNotFoundError:
+            return templates.TemplateResponse(
+                "upload.html",
+                {
+                    "request": request,
+                    "error": (
+                        "No reference model found yet — run `python "
+                        "scripts/fit_reference_model.py reference_clips/ "
+                        f"{REFERENCE_MODEL_PATH}` first."
+                    ),
+                },
             )
 
         served_dir = Path("static/results")
