@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -112,3 +113,42 @@ def test_analyze_shows_error_when_reference_model_missing(monkeypatch):
 
     assert response.status_code == 200
     assert "No reference model found yet" in response.text
+
+
+def test_analyze_isolates_results_across_requests(monkeypatch, tmp_path):
+    def make_result(label):
+        video_path = str(tmp_path / f"{label}_annotated.mp4")
+        phase_path = str(tmp_path / f"{label}_ready.jpg")
+        with open(video_path, "wb") as f:
+            f.write(label.encode())
+        with open(phase_path, "wb") as f:
+            f.write(label.encode())
+        return AnalysisResult(
+            feedback_text=f"{label} feedback",
+            annotated_video_path=video_path,
+            phase_frame_paths={
+                "ready": phase_path,
+                "backswing": phase_path,
+                "contact": phase_path,
+                "follow_through": phase_path,
+            },
+        )
+
+    results = iter([make_result("first"), make_result("second")])
+    monkeypatch.setattr(main_module, "analyze_forehand", lambda *a, **k: next(results))
+
+    response_first = client.post("/analyze", files={"video": ("clip.mp4", b"x", "video/mp4")})
+    response_second = client.post("/analyze", files={"video": ("clip.mp4", b"x", "video/mp4")})
+
+    assert "first feedback" in response_first.text
+    assert "second feedback" in response_second.text
+
+    url_first = re.search(r'src="(/static/results/[^"]*annotated\.mp4)"', response_first.text).group(1)
+    url_second = re.search(r'src="(/static/results/[^"]*annotated\.mp4)"', response_second.text).group(1)
+
+    # Each request must get its own storage location — otherwise the second
+    # request's copy overwrites the first's file before/while the first
+    # request's response is still being served.
+    assert url_first != url_second
+    assert client.get(url_first).content == b"first"
+    assert client.get(url_second).content == b"second"

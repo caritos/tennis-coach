@@ -1710,6 +1710,7 @@ git commit -m "Add pipeline orchestration wiring pose through to feedback"
 
 Replace the contents of `tests/test_main.py` with:
 ```python
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -1824,6 +1825,45 @@ def test_analyze_shows_error_when_reference_model_missing(monkeypatch):
 
     assert response.status_code == 200
     assert "No reference model found yet" in response.text
+
+
+def test_analyze_isolates_results_across_requests(monkeypatch, tmp_path):
+    def make_result(label):
+        video_path = str(tmp_path / f"{label}_annotated.mp4")
+        phase_path = str(tmp_path / f"{label}_ready.jpg")
+        with open(video_path, "wb") as f:
+            f.write(label.encode())
+        with open(phase_path, "wb") as f:
+            f.write(label.encode())
+        return AnalysisResult(
+            feedback_text=f"{label} feedback",
+            annotated_video_path=video_path,
+            phase_frame_paths={
+                "ready": phase_path,
+                "backswing": phase_path,
+                "contact": phase_path,
+                "follow_through": phase_path,
+            },
+        )
+
+    results = iter([make_result("first"), make_result("second")])
+    monkeypatch.setattr(main_module, "analyze_forehand", lambda *a, **k: next(results))
+
+    response_first = client.post("/analyze", files={"video": ("clip.mp4", b"x", "video/mp4")})
+    response_second = client.post("/analyze", files={"video": ("clip.mp4", b"x", "video/mp4")})
+
+    assert "first feedback" in response_first.text
+    assert "second feedback" in response_second.text
+
+    url_first = re.search(r'src="(/static/results/[^"]*annotated\.mp4)"', response_first.text).group(1)
+    url_second = re.search(r'src="(/static/results/[^"]*annotated\.mp4)"', response_second.text).group(1)
+
+    # Each request must get its own storage location — otherwise the second
+    # request's copy overwrites the first's file before/while the first
+    # request's response is still being served.
+    assert url_first != url_second
+    assert client.get(url_first).content == b"first"
+    assert client.get(url_second).content == b"second"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1881,6 +1921,7 @@ Expected: FAIL — `GET /` returns 404, `/analyze` doesn't exist, `OllamaUnavail
 """FastAPI web app: upload a forehand clip, get back annotated video + coaching feedback."""
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Request, UploadFile
@@ -1949,7 +1990,12 @@ async def analyze(request: Request, video: UploadFile = File(...)):
                 },
             )
 
-        served_dir = Path("static/results")
+        # Each request gets its own subdirectory under static/results/ so
+        # concurrent requests (double-submit, two browser tabs) can never
+        # overwrite each other's output — a shared fixed filename here would
+        # let one request's copy clobber another's mid-response.
+        request_id = uuid.uuid4().hex
+        served_dir = Path("static/results") / request_id
         served_dir.mkdir(parents=True, exist_ok=True)
 
         annotated_name = "annotated.mp4"
@@ -1959,14 +2005,14 @@ async def analyze(request: Request, video: UploadFile = File(...)):
         for phase_name, path in result.phase_frame_paths.items():
             dest_name = f"{phase_name}.jpg"
             shutil.copy(path, served_dir / dest_name)
-            phase_urls[phase_name] = f"/static/results/{dest_name}"
+            phase_urls[phase_name] = f"/static/results/{request_id}/{dest_name}"
 
         return templates.TemplateResponse(
             "results.html",
             {
                 "request": request,
                 "feedback_text": result.feedback_text,
-                "annotated_video_url": f"/static/results/{annotated_name}",
+                "annotated_video_url": f"/static/results/{request_id}/{annotated_name}",
                 "phase_urls": phase_urls,
             },
         )
@@ -1978,7 +2024,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pytest tests/test_main.py -v`
-Expected: PASS (8 tests)
+Expected: PASS (9 tests)
 
 - [ ] **Step 5: Commit**
 

@@ -1,6 +1,7 @@
 """FastAPI web app: upload a forehand clip, get back annotated video + coaching feedback."""
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Request, UploadFile
@@ -67,7 +68,12 @@ async def analyze(request: Request, video: UploadFile = File(...)):
                 },
             )
 
-        served_dir = Path("static/results")
+        # Each request gets its own subdirectory under static/results/ so
+        # concurrent requests (double-submit, two browser tabs) can never
+        # overwrite each other's output — a shared fixed filename here would
+        # let one request's copy clobber another's mid-response.
+        request_id = uuid.uuid4().hex
+        served_dir = Path("static/results") / request_id
         served_dir.mkdir(parents=True, exist_ok=True)
 
         annotated_name = "annotated.mp4"
@@ -77,14 +83,14 @@ async def analyze(request: Request, video: UploadFile = File(...)):
         for phase_name, path in result.phase_frame_paths.items():
             dest_name = f"{phase_name}.jpg"
             shutil.copy(path, served_dir / dest_name)
-            phase_urls[phase_name] = f"/static/results/{dest_name}"
+            phase_urls[phase_name] = f"/static/results/{request_id}/{dest_name}"
 
         return templates.TemplateResponse(
             "results.html",
             {
                 "request": request,
                 "feedback_text": result.feedback_text,
-                "annotated_video_url": f"/static/results/{annotated_name}",
+                "annotated_video_url": f"/static/results/{request_id}/{annotated_name}",
                 "phase_urls": phase_urls,
             },
         )
